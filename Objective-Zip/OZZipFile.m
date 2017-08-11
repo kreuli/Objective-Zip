@@ -67,6 +67,10 @@
     unzFile _unzFile;
 }
 
+// When reading the directory of a zip file we convert the file name strings to NSStrings;
+// this is not a 100 % reversible function, therefore we have to keep the original C char arrays
+// so that we can pass the original values to the locate method.
+@property (nonatomic, retain) NSMutableDictionary *originalFileNames;
 
 @end
 
@@ -288,8 +292,20 @@
 - (BOOL) locateFileInZip:(NSString *)fileNameInZip {
 	if (_mode != OZZipFileModeUnzip)
 		@throw [OZZipException zipExceptionWithReason:@"Operation permitted only in Unzip mode"];
-	
-	int err= unzLocateFile(_unzFile, [fileNameInZip cStringUsingEncoding:NSUTF8StringEncoding], NULL);
+
+    // We use the original file name from the zip file, if we have saved that earlier when browsing the folder,
+    // to avoid trouble with zip files that do not use UTF-8 file names
+    const char *fileName = [fileNameInZip cStringUsingEncoding:NSUTF8StringEncoding];
+    NSData *originalFileNameData = [self.originalFileNames valueForKey:fileNameInZip];
+    if (originalFileNameData)
+    {
+        char nul = '\0';
+        NSMutableData *mutableData = [originalFileNameData mutableCopy];
+        [mutableData appendBytes:&nul length:sizeof(nul)];
+        fileName = [mutableData bytes];
+    }
+    
+	int err= unzLocateFile(_unzFile, fileName, NULL);
 	if (err == UNZ_END_OF_LIST_OF_FILE)
 		return NO;
 
@@ -331,7 +347,10 @@
         return [NSArray array];
     
     NSMutableArray *files= [[NSMutableArray alloc] initWithCapacity:num];
-    
+
+    // Create the list of original file names
+    self.originalFileNames = [[NSMutableDictionary alloc] initWithCapacity:num];
+
     [self goToFirstFileInZip];
     for (int i= 0; i < num; i++) {
         OZFileInZipInfo *info= [self getCurrentFileInZipInfo];
@@ -356,9 +375,31 @@
 	int err= unzGetCurrentFileInfo64(_unzFile, &file_info, filename_inzip, sizeof(filename_inzip), NULL, 0, NULL, 0);
 	if (err != UNZ_OK)
 		@throw [OZZipException zipExceptionWithError:err reason:@"Error getting current file info of '%@'", _fileName];
-	
-	NSString *name= [NSString stringWithCString:filename_inzip encoding:NSUTF8StringEncoding];
-	
+
+    // File names should be UTF-8 (since zip format 6.3.0) but they are not always
+    // (use German Umlauts in file names and compress with Windows Explorer on Windows 10, for example),
+    // so let the system guess the string encoding between UTF-8 (as should be used according to the spec)
+    // and code page 437 (DOSLatinUS, as used by Windows Explorer and other software on Windows)
+    size_t length = strnlen(filename_inzip, sizeof(filename_inzip));
+    NSData *data = [NSData dataWithBytes:filename_inzip length:length];
+    NSString *name = nil;
+    [NSString stringEncodingForData:data
+                    encodingOptions:@{
+                                      NSStringEncodingDetectionSuggestedEncodingsKey:
+                                          @[@(NSUTF8StringEncoding),
+                                            @(CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingDOSLatinUS))],
+                                      NSStringEncodingDetectionAllowLossyKey:@(NO),
+                                      NSStringEncodingDetectionUseOnlySuggestedEncodingsKey:@(YES)}
+                    convertedString:&name
+                usedLossyConversion:nil];
+    
+    // Remember the original file name, so that we can use it later in the locate method,
+    // since the string conversion is not reversible in all cases
+    if (name)
+    {
+        [self.originalFileNames setValue:data forKey:name];
+    }
+    
 	OZZipCompressionLevel level= OZZipCompressionLevelNone;
 	if (file_info.compression_method != 0) {
 		switch ((file_info.flag & 0x6) / 2) {
