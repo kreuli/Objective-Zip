@@ -296,7 +296,7 @@
     // We use the original file name from the zip file, if we have saved that earlier when browsing the folder,
     // to avoid trouble with zip files that do not use UTF-8 file names
     const char *fileName = [fileNameInZip cStringUsingEncoding:NSUTF8StringEncoding];
-    NSData *originalFileNameData = [self.originalFileNames valueForKey:fileNameInZip];
+    NSData *originalFileNameData = [self.originalFileNames objectForKey:fileNameInZip];
     if (originalFileNameData)
     {
         char nul = '\0';
